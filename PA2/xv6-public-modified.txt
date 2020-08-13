@@ -1,0 +1,311 @@
+Only in /home/eddy/cs450/xv6-public/: bar.c
+Only in /home/eddy/cs450/xv6-public/: foo.c
+Only in /home/eddy/cs450/xv6-public/: .gdb_history
+Common subdirectories: /home/eddy/cs450/org/xv6-public/.git and /home/eddy/cs450/xv6-public/.git
+diff -uw /home/eddy/cs450/org/xv6-public/Makefile /home/eddy/cs450/xv6-public/Makefile
+--- /home/eddy/cs450/org/xv6-public/Makefile	2020-03-07 22:27:50.504212310 -0600
++++ /home/eddy/cs450/xv6-public/Makefile	2020-03-07 15:16:48.313178800 -0600
+@@ -76,7 +76,8 @@
+ LD = $(TOOLPREFIX)ld
+ OBJCOPY = $(TOOLPREFIX)objcopy
+ OBJDUMP = $(TOOLPREFIX)objdump
+-CFLAGS = -fno-pic -static -fno-builtin -fno-strict-aliasing -O2 -Wall -MD -ggdb -m32 -Werror -fno-omit-frame-pointer
++#CFLAGS = -fno-pic -static -fno-builtin -fno-strict-aliasing -O2 -Wall -MD -ggdb -m32 -Werror -fno-omit-frame-pointer
++CFLAGS = -fno-pic -static -fno-builtin -fno-strict-aliasing  -O -Wall -MD -ggdb -m32 -Werror -fno-omit-frame-pointer
+ CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
+ ASFLAGS = -m32 -gdwarf-2 -Wa,-divide
+ # FreeBSD ld wants ``elf_i386_fbsd''
+@@ -181,6 +182,8 @@
+ 	_usertests\
+ 	_wc\
+ 	_zombie\
++	_foo\
++	_bar\
+ 
+ fs.img: mkfs README $(UPROGS)
+ 	./mkfs fs.img README $(UPROGS)
+@@ -217,7 +220,7 @@
+ 	then echo "-gdb tcp::$(GDBPORT)"; \
+ 	else echo "-s -p $(GDBPORT)"; fi)
+ ifndef CPUS
+-CPUS := 2
++CPUS := 1
+ endif
+ QEMUOPTS = -drive file=fs.img,index=1,media=disk,format=raw -drive file=xv6.img,index=0,media=disk,format=raw -smp $(CPUS) -m 512 $(QEMUEXTRA)
+ 
+@@ -250,8 +253,9 @@
+ EXTRA=\
+ 	mkfs.c ulib.c user.h cat.c echo.c forktest.c grep.c kill.c\
+ 	ln.c ls.c mkdir.c rm.c stressfs.c usertests.c wc.c zombie.c\
++	whatIf.c foo.c bar.c\
+ 	printf.c umalloc.c\
+-	README dot-bochsrc *.pl toc.* runoff runoff1 runoff.list\
++	README data.txt dot-bochsrc *.pl toc.* runoff runoff1 runoff.list\
+ 	.gdbinit.tmpl gdbutil\
+ 
+ dist:
+diff -uw /home/eddy/cs450/org/xv6-public/proc.c /home/eddy/cs450/xv6-public/proc.c
+--- /home/eddy/cs450/org/xv6-public/proc.c	2020-03-07 22:27:50.512212284 -0600
++++ /home/eddy/cs450/xv6-public/proc.c	2020-03-07 21:30:19.619563577 -0600
+@@ -10,6 +10,12 @@
+ struct {
+   struct spinlock lock;
+   struct proc proc[NPROC];
++
++  ///////// testinfo for also Nice;
++  struct proc_run_record processhistory[32]; //queue
++  int curr_record;//next usable slot to record a process
++  int history_size;// 
++  ////////////////////////////
+ } ptable;
+ 
+ static struct proc *initproc;
+@@ -24,6 +30,10 @@
+ pinit(void)
+ {
+   initlock(&ptable.lock, "ptable");
++  /////////alsonice debug
++  ptable.curr_record=0;
++  ptable.history_size=0;
++  ////////
+ }
+ 
+ // Must be called with interrupts disabled
+@@ -88,7 +98,10 @@
+ found:
+   p->state = EMBRYO;
+   p->pid = nextpid++;
+-
++  ////
++  p->time_slices=1;// by default, every process have exactly one time slice
++  p->time_remain=1;//
++  ////
+   release(&ptable.lock);
+ 
+   // Allocate kernel stack.
+@@ -332,23 +345,62 @@
+ 
+     // Loop over process table looking for process to run.
+     acquire(&ptable.lock);
++    
++    //cprintf("scheduler\n");
++    /*for(long i=0;i<100000000;i++)
++    for(long i=0;i<100000000;i++);*/
+     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
++      //cprintf("process name %s \n",p->name);
+       if(p->state != RUNNABLE)
+         continue;
+ 
+       // Switch to chosen process.  It is the process's job
+       // to release ptable.lock and then reacquire it
+       // before jumping back to us.
++      p->time_remain=p->time_slices;;//
++      do
++      {
++        
+       c->proc = p;
+       switchuvm(p);
+       p->state = RUNNING;
+-
++      //cprintf("s to %d,time %d\n",p->pid,ticks);
+       swtch(&(c->scheduler), p->context);
+       switchkvm();
+ 
+       // Process is done running for now.
+       // It should have changed its p->state before coming back.
+       c->proc = 0;
++       //cprintf("remain ts %d \n",time_slice_remain);
++       
++  /////////record the process finish running  alsoNice debug
++       struct proc_run_record process_record;
++       //process_record.name=p->name;
++       process_record.remain_slice=p->time_remain;
++       process_record.time_slices=p->time_slices;
++       process_record.p_pid=p->pid;
++       process_record.state=p->state;
++       process_record.tick_when=ticks;
++       
++       ptable.processhistory[ptable.curr_record]=process_record;
++       ptable.history_size++;
++       ptable.curr_record++;
++       if(ptable.curr_record==32)ptable.curr_record=0;
++       if(ptable.history_size==32)ptable.history_size=31;
++//////////////////////////////
++       if(p->state==RUNNABLE)
++       {
++         
++         p->time_remain--;// the process has run out of one time slice in this scheduler round
++         
++       }else{
++         break;// it is not runnable, let the scheduler go exec next process
++       }
++       
++        
++      } while (p->time_remain>0);//run the process again if it still have remain slice in this scheduler round
++      
++      
+     }
+     release(&ptable.lock);
+ 
+@@ -387,6 +439,8 @@
+ {
+   acquire(&ptable.lock);  //DOC: yieldlock
+   myproc()->state = RUNNABLE;
++ //if( myproc()->time_slices>1) myproc()->time_slices--;// now time slice go to one,which mean it will only run once
++  //cprintf("pid %d name %s Y\n",myproc()->pid,myproc()->name);////
+   sched();
+   release(&ptable.lock);
+ }
+@@ -523,7 +577,7 @@
+       state = states[p->state];
+     else
+       state = "???";
+-    cprintf("%d %s %s", p->pid, state, p->name);
++    cprintf("%d %s %s %d", p->pid, state, p->name,p->time_slices);
+     if(p->state == SLEEPING){
+       getcallerpcs((uint*)p->context->ebp+2, pc);
+       for(i=0; i<10 && pc[i] != 0; i++)
+@@ -531,4 +585,25 @@
+     }
+     cprintf("\n");
+   }
++
++  cprintf("process running history size %d:\n",ptable.history_size);
++  struct proc_run_record* rp;
++  //rp=&ptable.processhistory[ptable.curr_record]
++  if(ptable.history_size==31){//the history record queue is full
++  rp=&ptable.processhistory[ptable.curr_record];
++    for(int i=0;i<31;i++){
++        
++        cprintf("time: %d, pid %d ,time_slices %d,remain_slices %d\n",rp->tick_when,rp->p_pid,rp->time_slices,rp->remain_slice );
++        rp++;
++        if(rp==&ptable.processhistory[32])rp=ptable.processhistory;
++      }
++  }else{
++      for(int i=0;i<32;i++)
++      {
++        rp=&ptable.processhistory[i];
++        cprintf("time: %d, pid %d ,time_slices %d\n",rp->tick_when,rp->p_pid,rp->remain_slice );
++        //rp=&ptable.processhistory[0];
++        //rp++;
++      }
++  }
+ }
+diff -uw /home/eddy/cs450/org/xv6-public/proc.h /home/eddy/cs450/xv6-public/proc.h
+--- /home/eddy/cs450/org/xv6-public/proc.h	2020-03-07 22:27:50.512212284 -0600
++++ /home/eddy/cs450/xv6-public/proc.h	2020-03-07 20:08:26.738537907 -0600
+@@ -49,6 +49,9 @@
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++
++  int time_slices;// number of time slices at the first scheduler round begin, used by alsoNice, default value 1
++  int time_remain;// how many time slices it still have
+ };
+ 
+ // Process memory is laid out contiguously, low addresses first:
+@@ -56,3 +59,16 @@
+ //   original data and bss
+ //   fixed-size stack
+ //   expandable heap
++
++
++//Debug information test alsoNice()
++struct proc_run_record
++{
++  uint tick_when;
++  int p_pid;
++  //char name[16];
++  int remain_slice;
++  int time_slices;
++  enum procstate state;// record the state when it return back to schduler
++};
++
+diff -uw /home/eddy/cs450/org/xv6-public/syscall.c /home/eddy/cs450/xv6-public/syscall.c
+--- /home/eddy/cs450/org/xv6-public/syscall.c	2020-03-07 22:27:50.516212271 -0600
++++ /home/eddy/cs450/xv6-public/syscall.c	2020-03-02 19:34:00.509633000 -0600
+@@ -103,6 +103,7 @@
+ extern int sys_wait(void);
+ extern int sys_write(void);
+ extern int sys_uptime(void);
++extern int sys_alsoNice(void);
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -126,6 +127,7 @@
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_alsoNice]sys_alsoNice,
+ };
+ 
+ void
+diff -uw /home/eddy/cs450/org/xv6-public/syscall.h /home/eddy/cs450/xv6-public/syscall.h
+--- /home/eddy/cs450/org/xv6-public/syscall.h	2020-03-07 22:27:50.516212271 -0600
++++ /home/eddy/cs450/xv6-public/syscall.h	2020-03-02 21:00:53.552530000 -0600
+@@ -20,3 +20,4 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_alsoNice 22
+diff -uw /home/eddy/cs450/org/xv6-public/sysproc.c /home/eddy/cs450/xv6-public/sysproc.c
+--- /home/eddy/cs450/org/xv6-public/sysproc.c	2020-03-07 22:27:50.516212271 -0600
++++ /home/eddy/cs450/xv6-public/sysproc.c	2020-03-07 20:02:27.903635578 -0600
+@@ -89,3 +89,24 @@
+   release(&tickslock);
+   return xticks;
+ }
++
++
++//increase the time slice that kernel allocated by n times
++//return num_slices if success,
++//return -1, if argument is not int type
++//return -2, if nice value is less than 1
++int sys_alsoNice(void){
++// int sys_alsoNice(int num) is the real signature
++    
++    int num_slices;
++    int rc=argint(0,&num_slices);// get the arg n,this is a particular way to get augs in systerm call
++    if(rc==-1)return -1;
++
++    if(num_slices<1) return -2;
++    //cprintf("pid %d called alsoNice with %d\n",myproc()->pid,num_slices);//debug info
++    acquire(&tickslock);//lock the timer when we try to set the new time slices
++    myproc()->time_slices=num_slices;
++    myproc()->time_remain=num_slices;
++    release(&tickslock);
++    return num_slices;
++}
+\ No newline at end of file
+diff -uw /home/eddy/cs450/org/xv6-public/trap.c /home/eddy/cs450/xv6-public/trap.c
+--- /home/eddy/cs450/org/xv6-public/trap.c	2020-03-07 22:27:50.516212271 -0600
++++ /home/eddy/cs450/xv6-public/trap.c	2020-03-07 19:55:43.664854954 -0600
+@@ -49,6 +49,7 @@
+   switch(tf->trapno){
+   case T_IRQ0 + IRQ_TIMER:
+     if(cpuid() == 0){
++      //cprintf("tick %d\n",ticks);
+       acquire(&tickslock);
+       ticks++;
+       wakeup(&ticks);
+diff -uw /home/eddy/cs450/org/xv6-public/user.h /home/eddy/cs450/xv6-public/user.h
+--- /home/eddy/cs450/org/xv6-public/user.h	2020-03-07 22:27:50.516212271 -0600
++++ /home/eddy/cs450/xv6-public/user.h	2020-03-02 19:32:55.613553000 -0600
+@@ -23,6 +23,7 @@
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int alsoNice(int);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff -uw /home/eddy/cs450/org/xv6-public/usys.S /home/eddy/cs450/xv6-public/usys.S
+--- /home/eddy/cs450/org/xv6-public/usys.S	2020-03-07 22:27:50.516212271 -0600
++++ /home/eddy/cs450/xv6-public/usys.S	2020-03-02 19:19:20.466121000 -0600
+@@ -29,3 +29,4 @@
+ SYSCALL(sbrk)
+ SYSCALL(sleep)
+ SYSCALL(uptime)
++SYSCALL(alsoNice)
+\ No newline at end of file
+Only in /home/eddy/cs450/xv6-public/: .vscode
